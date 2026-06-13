@@ -33,6 +33,8 @@ pub struct ChainState {
     index: Arc<RwLock<HashMap<Hash, Idx>>>,
     block_store: Arc<RwLock<HashMap<Hash, Block>>>,
     tip_work: Arc<RwLock<[u8; 32]>>,
+    /// Blocks fully validated once; reorgs may skip re-verifying their signatures.
+    validated: Arc<RwLock<HashSet<Hash>>>,
 }
 
 fn now_secs() -> u64 {
@@ -57,6 +59,7 @@ impl ChainState {
             index: Arc::new(RwLock::new(HashMap::new())),
             block_store: Arc::new(RwLock::new(HashMap::new())),
             tip_work: Arc::new(RwLock::new([0u8; 32])),
+            validated: Arc::new(RwLock::new(HashSet::new())),
         };
         state.load_or_init()?;
         Ok(state)
@@ -73,6 +76,10 @@ impl ChainState {
             self.load_index()?;
             self.load_utxo()?;
             self.rebuild_active()?;
+            // Refuse to operate on a database whose genesis differs from the pinned one.
+            if let Some((h0, _)) = self.height_index.read().get(&0).cloned() {
+                Self::check_pinned_genesis(&h0)?;
+            }
         } else {
             self.create_genesis()?;
         }
@@ -124,6 +131,7 @@ impl ChainState {
         headers.clear(); hidx.clear(); cb.clear();
         let mut cur = tip;
         while let Some(idx) = index.get(&cur) {
+            self.validated.write().insert(cur);
             if let Some(blk) = store.get(&cur) {
                 if let Some(coinbase) = blk.transactions.first() {
                     if coinbase.is_coinbase() {
@@ -143,15 +151,19 @@ impl ChainState {
     }
 
     fn create_genesis(&self) -> Result<()> {
-        let cb = Transaction::coinbase(0, INITIAL_REWARD, crate::wallet::address::genesis_script());
-        let mut genesis = Block::new([0u8; 32], vec![cb], GENESIS_BITS, 1735689600);
-        loop {
-            if genesis.header.meets_pow() { break; }
-            genesis.header.nonce = genesis.header.nonce.wrapping_add(1);
-            if genesis.header.nonce == 0 { genesis.header.timestamp += 1; }
-        }
+        let genesis = genesis_block();
+        Self::check_pinned_genesis(&genesis.hash())?;
         let _guard = self.apply_lock.lock();
         self.connect_genesis(&genesis)
+    }
+
+    fn check_pinned_genesis(hash: &Hash) -> Result<()> {
+        if GENESIS_HASH_HEX.is_empty() { return Ok(()); }
+        let got = crate::core::hash::hash_to_hex(hash);
+        if got != GENESIS_HASH_HEX {
+            return Err(anyhow!("genesis hash mismatch: got {}, expected {}", got, GENESIS_HASH_HEX));
+        }
+        Ok(())
     }
 
     fn store_block_meta(&self, block: &Block, idx: &Idx) -> Result<()> {
@@ -240,10 +252,13 @@ impl ChainState {
         if block.header.merkle_root != Block::merkle_root(&block.transactions) {
             return Err(anyhow!("merkle root khong khop"));
         }
-        if !block.header.meets_pow() {
-            return Err(anyhow!("PoW invalid"));
+        if !crate::core::block::check_witness_commitment(block) {
+            return Err(anyhow!("thieu hoac sai witness commitment"));
         }
         if height > 0 {
+            if !block.header.meets_pow() {
+                return Err(anyhow!("PoW invalid"));
+            }
             if block.header.bits != expected_bits {
                 return Err(anyhow!("bad bits: got 0x{:08x}, expected 0x{:08x}",
                     block.header.bits, expected_bits));
@@ -258,7 +273,8 @@ impl ChainState {
         Ok(())
     }
 
-    fn validate_txs(utxo: &UtxoMap, cb: &CbMap, supply: u64, block: &Block, height: u64)
+    fn validate_txs(utxo: &UtxoMap, cb: &CbMap, supply: u64, block: &Block, height: u64,
+                    check_sigs: bool)
         -> Result<(u64, u64)>
     {
         let mut coinbase_count = 0usize;
@@ -297,9 +313,11 @@ impl ChainState {
                 if expected != prev.script_pubkey {
                     return Err(anyhow!("pubkey khong khop script"));
                 }
-                let sighash = tx.sighash(vin);
-                if !crate::wallet::address::verify(&input.pubkey, &sighash, &input.signature) {
-                    return Err(anyhow!("chu ky khong hop le"));
+                if check_sigs {
+                    let sighash = tx.sighash(vin);
+                    if !crate::wallet::address::verify(&input.pubkey, &sighash, &input.signature) {
+                        return Err(anyhow!("chu ky khong hop le"));
+                    }
                 }
                 tx_in = tx_in.checked_add(prev.value).ok_or_else(|| anyhow!("input overflow"))?;
             }
@@ -335,6 +353,7 @@ impl ChainState {
             let txid = tx.txid();
             let is_cb = tx.is_coinbase();
             for (vout, out) in tx.outputs.iter().enumerate() {
+                if out.script_pubkey.first() == Some(&0x6a) { continue; } // OP_RETURN outputs are unspendable
                 let op = OutPoint { txid, vout: vout as u32 };
                 if is_cb { cb.insert(op.clone(), height); }
                 utxo.insert(op, out.clone());
@@ -345,7 +364,7 @@ impl ChainState {
     }
 
     fn connect_genesis(&self, block: &Block) -> Result<()> {
-        let (fees, cb_out) = Self::validate_txs(&self.utxo.read(), &self.coinbase_at.read(), 0, block, 0)?;
+        let (fees, cb_out) = Self::validate_txs(&self.utxo.read(), &self.coinbase_at.read(), 0, block, 0, true)?;
         Self::validate_block_basic(block, 0, GENESIS_BITS, 0)?;
         let mut utxo = self.utxo.write();
         let mut cb = self.coinbase_at.write();
@@ -367,6 +386,7 @@ impl ChainState {
         *self.tip_work.write() = work;
         self.headers.write().insert(block.hash(), (block.clone(), 0));
         self.height_index.write().insert(0, (block.hash(), block.header.timestamp));
+        self.validated.write().insert(block.hash());
         self.persist_meta(&block.hash(), 0, supply, &work)?;
         Ok(())
     }
@@ -385,7 +405,7 @@ impl ChainState {
         let (fees, cb_out) = {
             let utxo = self.utxo.read();
             let cb = self.coinbase_at.read();
-            Self::validate_txs(&utxo, &cb, supply_before, block, height)?
+            Self::validate_txs(&utxo, &cb, supply_before, block, height, true)?
         };
 
         let utxo_tree = self.db.open_tree("utxo")?;
@@ -404,6 +424,7 @@ impl ChainState {
                 let txid = tx.txid();
                 let is_cb = tx.is_coinbase();
                 for (vout, out) in tx.outputs.iter().enumerate() {
+                    if out.script_pubkey.first() == Some(&0x6a) { continue; }
                     let op = OutPoint { txid, vout: vout as u32 };
                     if is_cb { cb.insert(op.clone(), height); }
                     batch.insert(bincode::serialize(&op)?, bincode::serialize(out)?);
@@ -428,6 +449,7 @@ impl ChainState {
         *self.tip_work.write() = work;
         self.headers.write().insert(block.hash(), (block.clone(), height));
         self.height_index.write().insert(height, (block.hash(), block.header.timestamp));
+        self.validated.write().insert(block.hash());
         self.persist_meta(&block.hash(), height, new_supply, &work)?;
         Ok(())
     }
@@ -464,8 +486,10 @@ impl ChainState {
             let blk = store.get(h).ok_or_else(|| anyhow!("thieu block body"))?;
             let height = self.index.read().get(h).map(|i| i.height)
                 .ok_or_else(|| anyhow!("thieu idx"))?;
-            let (fees, cb_out) = Self::validate_txs(&utxo, &cb, supply, blk, height)?;
+            let need_sigs = !self.validated.read().contains(h);
+            let (fees, cb_out) = Self::validate_txs(&utxo, &cb, supply, blk, height, need_sigs)?;
             Self::apply_txs(&mut utxo, &mut cb, &mut supply, blk, height, fees, cb_out);
+            self.validated.write().insert(*h);
         }
         drop(store);
 
@@ -559,4 +583,20 @@ impl ChainState {
         let hash = self.height_index.read().get(&height).map(|(h, _)| *h)?;
         self.block_store.read().get(&hash).cloned()
     }
+}
+
+/// Deterministic mainnet genesis. Shared by node startup and tests so the
+/// pinned GENESIS_HASH_HEX always refers to exactly this construction.
+pub fn genesis_block() -> Block {
+    let mut cb = Transaction::coinbase(0, INITIAL_REWARD, crate::wallet::address::genesis_script());
+    let mut msg_script = Vec::with_capacity(2 + GENESIS_MESSAGE.len());
+    msg_script.push(0x6a);
+    msg_script.push(GENESIS_MESSAGE.len() as u8);
+    msg_script.extend_from_slice(GENESIS_MESSAGE.as_bytes());
+    cb.outputs.push(crate::core::tx::TxOut { value: 0, script_pubkey: msg_script });
+    let mut txs = vec![cb];
+    crate::core::block::add_witness_commitment(&mut txs);
+    let mut b = Block::new([0u8; 32], txs, GENESIS_BITS, GENESIS_TIMESTAMP);
+    b.header.nonce = GENESIS_NONCE;
+    b
 }

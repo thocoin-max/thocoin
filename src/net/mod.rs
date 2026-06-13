@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::tcp::OwnedReadHalf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use serde::{Serialize, Deserialize};
@@ -64,7 +64,7 @@ impl P2P {
 
     async fn send_msg<W: AsyncWriteExt + Unpin>(w: &mut W, msg: &Msg) -> anyhow::Result<()> {
         let bytes = bincode::serialize(msg)?;
-        if bytes.len() > MAX_MSG_LEN { anyhow::bail!("msg qua lon"); }
+        if bytes.len() > MAX_MSG_LEN { anyhow::bail!("message too large"); }
         w.write_all(&(bytes.len() as u32).to_le_bytes()).await?;
         w.write_all(&bytes).await?;
         Ok(())
@@ -111,6 +111,7 @@ impl P2P {
         let announce = self.clone();
         tokio::spawn(async move {
             let mut last = announce.chain.tip_height();
+            let mut announced: HashSet<Hash> = HashSet::new();
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 let h = announce.chain.tip_height();
@@ -119,6 +120,13 @@ impl P2P {
                     let tip = announce.chain.tip_hash();
                     announce.broadcast_inv(0, vec![tip], vec![]);
                 }
+                // Relay new mempool txs (e.g. from RPC send); local txs were never announced before.
+                let cur: HashSet<Hash> = announce.mempool.entries.read().keys().cloned().collect();
+                let new_txs: Vec<Hash> = cur.iter().filter(|t| !announced.contains(*t)).cloned().collect();
+                if !new_txs.is_empty() {
+                    announce.broadcast_inv(0, vec![], new_txs);
+                }
+                announced = cur; // stop tracking txs that left the mempool
             }
         });
 
@@ -179,7 +187,22 @@ impl P2P {
         loop {
             count += 1;
             if count > MAX_MSGS_PER_CONN { break; }
-            let Some(msg) = Self::read_msg(&mut reader).await else { break };
+            // Timeout: a silent peer would hold a slot forever; ping once, drop on the second timeout.
+            let msg = match tokio::time::timeout(
+                std::time::Duration::from_secs(150), Self::read_msg(&mut reader)).await
+            {
+                Ok(Some(m)) => m,
+                Ok(None) => break,
+                Err(_) => {
+                    let _ = tx.send(Msg::Ping);
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(150), Self::read_msg(&mut reader)).await
+                    {
+                        Ok(Some(m)) => m,
+                        _ => break,
+                    }
+                }
+            };
 
             if !handshaked {
                 match msg {

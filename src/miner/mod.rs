@@ -48,10 +48,13 @@ impl Miner {
         let height = *self.chain.height.read() + 1;
         let supply = *self.chain.supply.read();
         let reward = block_reward(height, supply);
-        let mut txs = vec![Transaction::coinbase(height, reward, self.wallet.key.read().script_pubkey())];
-        let snap = self.mempool.snapshot(500);
+        let (snap, fees) = self.mempool.snapshot_with_fees(500);
         let txids: Vec<[u8; 32]> = snap.iter().map(|t| t.txid()).collect();
+        // Coinbase claims reward plus total fees.
+        let mut txs = vec![Transaction::coinbase(height, reward.saturating_add(fees),
+            self.wallet.key.read().script_pubkey())];
         txs.extend(snap);
+        crate::core::block::add_witness_commitment(&mut txs);
         let bits = self.chain.current_bits();
         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         let mut b = Block::new(prev, txs, bits, ts);

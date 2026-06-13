@@ -91,3 +91,15 @@ fn coinbase_txid_unique_per_height() {
     let b = Transaction::coinbase(11, 100, vec![0xAA]);
     assert_ne!(a.txid(), b.txid());
 }
+
+#[test]
+fn genesis_is_pinned() {
+    let g = crate::core::chain::genesis_block();
+    let hex = hash_to_hex(&g.hash());
+    println!("GENESIS_HASH={hex}");
+    assert!(crate::core::block::check_witness_commitment(&g));
+    assert_eq!(g.header.merkle_root, crate::core::block::Block::merkle_root(&g.transactions));
+    if !GENESIS_HASH_HEX.is_empty() {
+        assert_eq!(hex, GENESIS_HASH_HEX);
+    }
+}

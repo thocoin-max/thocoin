@@ -11,12 +11,30 @@ pub const MAX_BLOCK_SIZE: usize = 1_000_000;
 pub const MAX_BLOCK_SIGOPS: usize = 4_000;
 pub const GENESIS_BITS: u32 = 0x1d00ffff;
 pub const POW_LIMIT_BITS: u32 = 0x1d00ffff;
+
+// Mainnet genesis is fully deterministic: fixed timestamp, nonce, and embedded
+// message. The block is identified by GENESIS_HASH_HEX instead of PoW, so no
+// mining is needed at first start and every parameter below is locked: changing
+// any value that affects the genesis block changes its hash and the node
+// refuses to start.
+pub const GENESIS_TIMESTAMP: u64 = 1735689600;
+pub const GENESIS_NONCE: u32 = 0;
+pub const GENESIS_MESSAGE: &str = "ThoCoin 13/Jun/2026 post-quantum UTXO mainnet genesis";
+
+// Fill with the value printed by `cargo test genesis_is_pinned -- --nocapture`
+// before building the release. Empty string disables the check (dev mode).
+pub const GENESIS_HASH_HEX: &str =
+    "5aeea25c197a33246de1d9e1f018118a840999740f3bb7b2c49c2961eeb6dd21";
+
 pub const NETWORK_MAGIC: u32 = 0xC222C222;
 pub const P2P_PORT: u16 = 22221;
 pub const RPC_PORT: u16 = 22222;
 pub const ADDRESS_PREFIX: u8 = 0x32;
 pub const MIN_RELAY_FEE_PER_KB: u64 = 1_000;
 
+// Fill with at least two reachable nodes ("host:22221" or "ip:22221") before
+// the mainnet release; new nodes use these to find the network. Until then,
+// peers can be supplied with the THOCOIN_PEERS environment variable.
 pub const SEED_NODES: &[&str] = &[
 ];
 

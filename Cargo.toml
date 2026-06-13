@@ -35,6 +35,9 @@ zeroize = { version = "1", features = ["derive"] }
 rpassword = "7"
 subtle = "2"
 
+[features]
+gpu = []
+
 [build-dependencies]
 winres = "0.1"
 

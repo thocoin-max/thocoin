@@ -37,6 +37,24 @@ enum ChangeStep { OldPass, NewPass }
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum Tab { Overview, Send, Receive, Transactions, Addresses, Coins, Contacts, Console, Mining }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum MinerMode { Cpu, Gpu }
+
+impl MinerMode {
+    pub fn detect() -> Self {
+        let candidates = [
+            std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("render.cfg"))),
+            Some(data_dir().join("render.cfg")),
+        ];
+        for c in candidates.into_iter().flatten() {
+            if let Ok(s) = std::fs::read_to_string(&c) {
+                return if s.trim().eq_ignore_ascii_case("gpu") { MinerMode::Gpu } else { MinerMode::Cpu };
+            }
+        }
+        MinerMode::Cpu
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Theme {
     bg: Color32, sidebar: Color32, panel_alt: Color32, border: Color32, divider: Color32,
@@ -116,6 +134,7 @@ pub struct App {
     threads: usize,
     use_cpu: bool,
     use_gpu: bool,
+    miner_mode: MinerMode,
 
     password_hash: Option<[u8; 32]>,
     pass_modal: PassModal,
@@ -141,7 +160,7 @@ pub struct App {
 impl App {
     pub fn new(
         chain: Arc<ChainState>, wallet: Arc<Wallet>, mempool: Mempool,
-        miner: Arc<Miner>, gpu_miner: Arc<GpuMiner>,
+        miner: Arc<Miner>, gpu_miner: Arc<GpuMiner>, mode: MinerMode,
     ) -> Self {
         let mnemonic_display = wallet.mnemonic();
         let supply = *chain.supply.read();
@@ -169,7 +188,8 @@ impl App {
             last_hr_cpu_t: Instant::now(), last_hr_cpu_v: 0, cpu_hashrate: 0.0,
             last_hr_gpu_t: Instant::now(), last_hr_gpu_v: 0, gpu_hashrate: 0.0,
             threads: num_cpus().max(1),
-            use_cpu: true, use_gpu: false,
+            use_cpu: mode == MinerMode::Cpu, use_gpu: mode == MinerMode::Gpu,
+            miner_mode: mode,
             password_hash: load_password_hash(),
             pass_modal: PassModal::None,
             pass_input: String::new(),
@@ -1820,6 +1840,7 @@ impl App {
         let gpu_dev = self.gpu_miner.device_name.read().clone();
 
         let border_cpu = if self.use_cpu { t.accent } else { t.border };
+        if self.miner_mode == MinerMode::Cpu {
         egui::Frame::none()
             .fill(t.panel_alt).stroke(Stroke::new(1.0, border_cpu))
             .rounding(Rounding::same(8.0)).inner_margin(Margin::same(16.0))
@@ -1852,9 +1873,11 @@ impl App {
             });
 
         ui.add_space(12.0);
+        }
 
         let border_gpu = if self.use_gpu && gpu_available { t.accent }
             else if !gpu_available { t.danger } else { t.border };
+        if self.miner_mode == MinerMode::Gpu {
         egui::Frame::none()
             .fill(t.panel_alt).stroke(Stroke::new(1.0, border_gpu))
             .rounding(Rounding::same(8.0)).inner_margin(Margin::same(16.0))
@@ -1890,6 +1913,7 @@ impl App {
             });
 
         ui.add_space(14.0);
+        }
 
         egui::Frame::none()
             .fill(t.panel_alt).stroke(Stroke::new(1.0, t.border))

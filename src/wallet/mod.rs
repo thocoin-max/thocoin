@@ -96,48 +96,66 @@ impl Wallet {
         chain.balance_for_script(&self.key.read().script_pubkey())
     }
 
+    /// `fee` is a floor; the final fee converges to max(floor, size-based min relay fee).
     pub fn send(&self, chain: &ChainState, to: &str, amount: u64, fee: u64) -> Result<Transaction> {
+        use crate::core::consensus::{COINBASE_MATURITY, MIN_RELAY_FEE_PER_KB};
         let to_hash = decode_address(to)?;
         let to_script = script_p2pkh(&to_hash);
         let my_script = self.key.read().script_pubkey();
+        let next_height = *chain.height.read() + 1;
 
-        let utxo = chain.utxo.read();
-        let mut inputs = Vec::new();
-        let mut collected = 0u64;
-        let need = amount.checked_add(fee).ok_or_else(|| anyhow!("amount+fee overflow"))?;
-        for (op, out) in utxo.iter() {
-            if out.script_pubkey == my_script {
+        // Select only mature UTXOs (coinbase outputs need 100 confirmations).
+        let mut candidates: Vec<(crate::core::tx::OutPoint, u64)> = {
+            let utxo = chain.utxo.read();
+            let cb = chain.coinbase_at.read();
+            utxo.iter()
+                .filter(|(op, out)| out.script_pubkey == my_script
+                    && cb.get(op).map_or(true, |&h| next_height >= h + COINBASE_MATURITY))
+                .map(|(op, out)| (op.clone(), out.value))
+                .collect()
+        };
+        candidates.sort_by(|a, b| b.1.cmp(&a.1)); // largest first: fewer inputs, smaller tx, lower fee
+
+        let mut cur_fee = fee.max(1);
+        for _ in 0..16 {
+            let need = amount.checked_add(cur_fee).ok_or_else(|| anyhow!("amount+fee overflow"))?;
+            let mut inputs = Vec::new();
+            let mut collected = 0u64;
+            for (op, v) in &candidates {
                 inputs.push(op.clone());
-                collected += out.value;
+                collected += v;
                 if collected >= need { break; }
             }
+            if collected < need { return Err(anyhow!("insufficient funds (kha dung sau maturity)")); }
+
+            let key = self.key.read();
+            let tx_inputs: Vec<TxIn> = inputs.iter().map(|op| TxIn {
+                prev: op.clone(),
+                signature: vec![],
+                pubkey: key.pubkey_bytes(),
+                sequence: 0xffffffff,
+            }).collect();
+
+            let mut outputs = vec![TxOut { value: amount, script_pubkey: to_script.clone() }];
+            let change = collected - need;
+            if change > 0 {
+                outputs.push(TxOut { value: change, script_pubkey: my_script.clone() });
+            }
+
+            let mut tx = Transaction { version: 1, inputs: tx_inputs, outputs, lock_time: 0 };
+            for vin in 0..tx.inputs.len() {
+                let h = tx.sighash(vin);
+                tx.inputs[vin].signature = key.sign(&h);
+            }
+            drop(key);
+
+            let size = tx.size() as u64;
+            let min_fee = size.saturating_mul(MIN_RELAY_FEE_PER_KB).div_ceil(1000);
+            if cur_fee >= min_fee {
+                return Ok(tx);
+            }
+            cur_fee = min_fee; // ML-DSA inputs are large (~4KB), raise fee and rebuild
         }
-        if collected < need { return Err(anyhow!("insufficient funds")); }
-        drop(utxo);
-
-        let tx_inputs: Vec<TxIn> = inputs.iter().map(|op| TxIn {
-            prev: op.clone(),
-            signature: vec![],
-            pubkey: self.key.read().pubkey_bytes(),
-            sequence: 0xffffffff,
-        }).collect();
-
-        let mut outputs = vec![TxOut { value: amount, script_pubkey: to_script }];
-        let change = collected - need;
-        if change > 0 {
-            outputs.push(TxOut { value: change, script_pubkey: my_script });
-        }
-
-        let mut tx = Transaction {
-            version: 1, inputs: tx_inputs, outputs, lock_time: 0,
-        };
-        let key = self.key.read();
-        for vin in 0..tx.inputs.len() {
-            let h = tx.sighash(vin);
-            tx.inputs[vin].signature = key.sign(&h);
-        }
-        drop(key);
-
-        Ok(tx)
+        Err(anyhow!("phi khong hoi tu"))
     }
 }

@@ -126,7 +126,7 @@ fn already_running() -> bool {
     unsafe {
         let h = CreateMutexW(std::ptr::null(), 1, name.as_ptr());
         let err = GetLastError();
-        let _ = h;
+        std::mem::forget(h);
         err == 183
     }
 }

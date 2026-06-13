@@ -43,7 +43,7 @@ impl RequestMiddleware for AuthMiddleware {
     }
 }
 
-pub fn start_rpc(chain: Arc<ChainState>, wallet: Arc<Wallet>) -> jsonrpc_http_server::Server {
+pub fn start_rpc(chain: Arc<ChainState>, wallet: Arc<Wallet>, mempool: crate::core::mempool::Mempool) -> jsonrpc_http_server::Server {
     let mut io = IoHandler::new();
 
     let c = chain.clone();
@@ -66,6 +66,7 @@ pub fn start_rpc(chain: Arc<ChainState>, wallet: Arc<Wallet>) -> jsonrpc_http_se
 
     let c3 = chain.clone();
     let w3 = wallet.clone();
+    let mp = mempool.clone();
     io.add_sync_method("send", move |p: Params| {
         let arr: Vec<Value> = p.parse().map_err(|_| jsonrpc_core::Error::invalid_params("need [to, amount]"))?;
         if arr.len() < 2 {
@@ -83,7 +84,13 @@ pub fn start_rpc(chain: Arc<ChainState>, wallet: Arc<Wallet>) -> jsonrpc_http_se
         }
 
         match w3.send(&c3, &to, amount, 1000) {
-            Ok(tx) => Ok(Value::String(hash_to_hex(&tx.txid()))),
+            Ok(tx) => {
+                let txid = hash_to_hex(&tx.txid());
+                // Vào mempool → vòng announce P2P sẽ relay INV. Trước đây tx bị vứt sau khi tạo.
+                mp.accept(&c3, tx)
+                    .map_err(|e| jsonrpc_core::Error::invalid_params(format!("mempool tu choi: {e}")))?;
+                Ok(Value::String(txid))
+            }
             Err(e) => Err(jsonrpc_core::Error::invalid_params(e.to_string())),
         }
     });

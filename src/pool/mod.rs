@@ -50,7 +50,7 @@ pub enum ServerMsg {
 }
 
 #[derive(Clone)]
-struct ShareRecord { address: String }
+pub struct ShareRecord { pub address: String }
 
 pub struct Pool {
     pub chain: Arc<ChainState>,
@@ -72,12 +72,17 @@ impl Pool {
     }
 
     pub fn share_bits(net_bits: u32) -> u32 {
-
-        let exp = (net_bits >> 24) as u32;
-        let mant = net_bits & 0x00ffffff;
-        let add_bytes = SHARE_SHIFT / 8;
-        let new_exp = (exp + add_bytes).min(0x1d);
-        (new_exp << 24) | mant
+        // Share target = network target * 2^SHARE_SHIFT (exactly 2^12 easier).
+        // The old code only bumped the exponent by one byte (*2^8), off from SHARE_SHIFT=12.
+        use crate::core::hash::{bits_to_target, target_to_bits, target_mul_div, target_cmp};
+        let t = bits_to_target(net_bits);
+        let mut shifted = target_mul_div(&t, 1u64 << SHARE_SHIFT, 1);
+        let limit = bits_to_target(POW_LIMIT_BITS);
+        if target_cmp(&shifted, &limit) == std::cmp::Ordering::Greater {
+            shifted = limit;
+        }
+        let b = target_to_bits(&shifted);
+        if b == 0 { POW_LIMIT_BITS } else { b }
     }
 
     pub fn build_template(&self) -> Block {
@@ -85,16 +90,16 @@ impl Pool {
         let height = *self.chain.height.read() + 1;
         let supply = *self.chain.supply.read();
         let reward = block_reward(height, supply);
-        let mut txs = vec![Transaction::coinbase(height, reward,
+        let (snap, fees) = self.mempool.snapshot_with_fees(500);
+        let mut txs = vec![Transaction::coinbase(height, reward.saturating_add(fees),
             self.wallet.key.read().script_pubkey())];
-        let snap = self.mempool.snapshot(500);
         txs.extend(snap);
+        crate::core::block::add_witness_commitment(&mut txs);
         let bits = self.chain.current_bits();
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         let mut b = Block::new(prev, txs, bits, ts);
         b.header.nonce = 0;
-        let _ = height;
         b
     }
 
@@ -188,7 +193,10 @@ impl Pool {
             if cur < h + COINBASE_MATURITY { continue; }
             let outs: Vec<(String, u64)> = match bincode::deserialize(&v) { Ok(x)=>x, Err(_)=>continue };
             if let Some(tx) = self.build_payout_tx(h, &outs) {
-                self.mempool.add(tx);
+                // accept (not add): validated and fee-paying, so other nodes relay it.
+                if let Err(e) = self.mempool.accept(&self.chain, tx) {
+                    eprintln!("payout at height {h} rejected by mempool: {e}");
+                }
             }
             done.push(h);
         }
@@ -197,6 +205,7 @@ impl Pool {
 
     fn build_payout_tx(&self, h: u64, outs: &[(String, u64)]) -> Option<Transaction> {
         use crate::core::tx::{TxIn, TxOut, OutPoint};
+        use crate::core::consensus::MIN_RELAY_FEE_PER_KB;
 
         let (hash, _) = self.chain.height_index.read().get(&h).cloned()?;
         let (blk, _) = self.chain.headers.read().get(&hash).cloned()?;
@@ -204,6 +213,24 @@ impl Pool {
         let cb_txid = cb.txid();
         let prev = OutPoint { txid: cb_txid, vout: 0 };
         let key = self.wallet.key.read();
+
+        let build = |outputs: Vec<TxOut>| -> Transaction {
+            let mut tx = Transaction {
+                version: 1,
+                inputs: vec![TxIn {
+                    prev: prev.clone(),
+                    signature: vec![],
+                    pubkey: key.pubkey_bytes(),
+                    sequence: 0xffffffff,
+                }],
+                outputs,
+                lock_time: 0,
+            };
+            let sighash = tx.sighash(0);
+            tx.inputs[0].signature = key.sign(&sighash);
+            tx
+        };
+
         let mut outputs = Vec::new();
         for (addr, amt) in outs {
             if let Ok(h20) = decode_address(addr) {
@@ -211,20 +238,36 @@ impl Pool {
             }
         }
         if outputs.is_empty() { return None; }
-        let mut tx = Transaction {
-            version: 1,
-            inputs: vec![TxIn {
-                prev,
-                signature: vec![],
-                pubkey: key.pubkey_bytes(),
-                sequence: 0xffffffff,
-            }],
-            outputs,
-            lock_time: 0,
-        };
-        let sighash = tx.sighash(0);
-        tx.inputs[0].signature = key.sign(&sighash);
-        Some(tx)
+
+        // Pass 1: measure size to compute the fee. Pass 2: deduct it pro-rata and re-sign.
+        // Previously the fee was 0, so the payout tx was never relayed.
+        let probe = build(outputs.clone());
+        let fee = (probe.size() as u64)
+            .saturating_mul(MIN_RELAY_FEE_PER_KB).div_ceil(1000)
+            .saturating_add(MIN_RELAY_FEE_PER_KB); // headroom for minor size changes
+        let total: u64 = outputs.iter().map(|o| o.value).sum();
+        if total <= fee { return None; }
+
+        let mut deducted = 0u64;
+        for o in outputs.iter_mut() {
+            let cut = ((o.value as u128 * fee as u128) / total as u128) as u64;
+            let cut = cut.min(o.value);
+            o.value -= cut;
+            deducted += cut;
+        }
+        if deducted < fee {
+            let mut rest = fee - deducted;
+            for o in outputs.iter_mut() {
+                let cut = rest.min(o.value);
+                o.value -= cut;
+                rest -= cut;
+                if rest == 0 { break; }
+            }
+        }
+        outputs.retain(|o| o.value > 0);
+        if outputs.is_empty() { return None; }
+
+        Some(build(outputs))
     }
 
     pub fn stats(&self) -> (usize, usize) {

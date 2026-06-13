@@ -1,56 +1,95 @@
-; ThoCoin Installer — Inno Setup script
-; Build:
-;   1. cargo build --release
-;   2. Mở Inno Setup Compiler → File → Open → chọn file này → Build → Compile
-;   3. File output: D:\thocoin\installer\ThoCoin-Setup-0.1.0.exe
+; ThoCoin installer (Inno Setup). Build BOTH exes first with build-release.bat:
+;   cargo build --release --bin thocoin-gui
+;   copy target\release\thocoin-gui.exe build\thocoin-gui-cpu.exe
+;   cargo build --release --features gpu --bin thocoin-gui
+;   copy target\release\thocoin-gui.exe build\thocoin-gui-gpu.exe
 
-#define MyAppName        "ThoCoin"
-#define MyAppVersion     "0.1.0"
-#define MyAppPublisher   "ThoCoin"
-#define MyAppExeName     "thocoin-gui.exe"
-#define MyAppDaemonName  "thocoind.exe"
+#define AppName "ThoCoin Wallet"
+#define AppVersion "0.1.0"
+#define AppExe "thocoin-gui.exe"
 
 [Setup]
-AppId={{8B7C2D4A-5E3F-4A92-9C1B-22D9F8E1A777}
-AppName={#MyAppName}
-AppVersion={#MyAppVersion}
-AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\{#MyAppName}
-DefaultGroupName={#MyAppName}
+AppName={#AppName}
+AppVersion={#AppVersion}
+AppPublisher=ThoCoin
+DefaultDirName={autopf}\ThoCoin
+DefaultGroupName=ThoCoin
 DisableProgramGroupPage=yes
-OutputDir=installer
-OutputBaseFilename=ThoCoin-Setup-{#MyAppVersion}
-SetupIconFile=assets\logo.ico
-UninstallDisplayIcon={app}\{#MyAppExeName}
-Compression=lzma2/ultra
+OutputDir=dist
+OutputBaseFilename=ThoCoin-Setup
+Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
-PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
-
-[Languages]
-Name: "english"; MessagesFile: "compiler:Default.isl"
-
-[Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
+ArchitecturesInstallIn64BitMode=x64compatible
+SetupIconFile=assets\logo.ico
+CloseApplications=yes
+CloseApplicationsFilter=*.exe
+RestartApplications=no
+AppMutex=ThoCoin_SingleInstance_Mutex
+UninstallDisplayIcon={app}\assets\logo.ico
 
 [Files]
-Source: "target\release\{#MyAppExeName}";    DestDir: "{app}"; Flags: ignoreversion
-Source: "target\release\{#MyAppDaemonName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "assets\logo.png";                   DestDir: "{app}\assets"; Flags: ignoreversion
-Source: "assets\logo.ico";                   DestDir: "{app}\assets"; Flags: ignoreversion
+; GPU edition: exe built with --features gpu + OpenCL ICD loader
+Source: "build\thocoin-gui-gpu.exe"; DestDir: "{app}"; DestName: "{#AppExe}"; Flags: ignoreversion; Check: UseGpu
+Source: "redist\OpenCL.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Check: UseGpu
+; CPU edition: exe built without gpu feature + Mesa software GL
+Source: "build\thocoin-gui-cpu.exe"; DestDir: "{app}"; DestName: "{#AppExe}"; Flags: ignoreversion; Check: UseCpu
+Source: "opengl32.dll"; DestDir: "{app}\mesa"; Flags: ignoreversion skipifsourcedoesntexist; Check: UseCpu
+Source: "libgallium_wgl.dll"; DestDir: "{app}\mesa"; Flags: ignoreversion skipifsourcedoesntexist; Check: UseCpu
+Source: "libglapi.dll"; DestDir: "{app}\mesa"; Flags: ignoreversion skipifsourcedoesntexist; Check: UseCpu
+; Common
+Source: "assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#MyAppName} Wallet"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\logo.ico"
-Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName} Wallet"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\logo.ico"; Tasks: desktopicon
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; IconFilename: "{app}\assets\logo.ico"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; IconFilename: "{app}\assets\logo.ico"; Tasks: desktopicon
+
+[Tasks]
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Optional:"
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch ThoCoin Wallet"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExe}"; Description: "Launch ThoCoin Wallet"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Không xóa wallet/data — user phải tự xóa nếu muốn
-; Để xóa luôn data khi uninstall, uncomment dòng dưới:
-; Type: filesandordirs; Name: "{userappdata}\ThoCoin"
+Type: files; Name: "{app}\render.cfg"
+
+[Code]
+var
+  RenderPage: TInputOptionWizardPage;
+
+procedure InitializeWizard;
+begin
+  RenderPage := CreateInputOptionPage(wpSelectTasks,
+    'Edition', 'Choose your ThoCoin edition',
+    'CPU edition works on every computer (recommended for VMs/old PCs). ' +
+    'GPU edition enables GPU mining and needs a modern graphics driver with OpenCL.',
+    True, False);
+  RenderPage.Add('CPU edition - CPU mining only, software rendering, works everywhere');
+  RenderPage.Add('GPU edition - GPU + CPU mining, hardware rendering');
+  RenderPage.SelectedValueIndex := 0;
+end;
+
+function UseCpu(): Boolean;
+begin
+  Result := RenderPage.SelectedValueIndex = 0;
+end;
+
+function UseGpu(): Boolean;
+begin
+  Result := not UseCpu();
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Mode: String;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    if UseCpu() then Mode := 'cpu' else Mode := 'gpu';
+    SaveStringToFile(ExpandConstant('{app}\render.cfg'), Mode, False);
+    DeleteFile(ExpandConstant('{app}\opengl32.dll'));
+    DeleteFile(ExpandConstant('{app}\libgallium_wgl.dll'));
+    DeleteFile(ExpandConstant('{app}\libglapi.dll'));
+  end;
+end;

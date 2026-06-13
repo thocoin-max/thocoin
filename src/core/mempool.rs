@@ -128,7 +128,13 @@ impl Mempool {
     }
 
     pub fn snapshot(&self, max: usize) -> Vec<Transaction> {
+        self.snapshot_with_fees(max).0
+    }
+
+    /// Returns (txs, total fees) so miners can add fees to the coinbase.
+    pub fn snapshot_with_fees(&self, max: usize) -> (Vec<Transaction>, u64) {
         let mut out = Vec::new();
+        let mut fees = 0u64;
         let mut bytes = COINBASE_RESERVE;
         let mut sigops = 0usize;
         for e in self.ranked() {
@@ -137,9 +143,10 @@ impl Mempool {
             if sigops + e.tx.sigops() > MAX_BLOCK_SIGOPS { continue; }
             bytes += e.size;
             sigops += e.tx.sigops();
+            fees = fees.saturating_add(e.fee);
             out.push(e.tx);
         }
-        out
+        (out, fees)
     }
 
     pub fn remove_txs(&self, txids: &[Hash]) {

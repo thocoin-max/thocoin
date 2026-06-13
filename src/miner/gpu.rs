@@ -1,17 +1,26 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64};
+#[cfg(feature = "gpu")]
+use std::sync::atomic::Ordering;
+#[cfg(feature = "gpu")]
 use std::thread;
+#[cfg(feature = "gpu")]
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "gpu")]
 use ocl::{Buffer, MemFlags, ProQue};
 
+#[cfg(feature = "gpu")]
 use crate::core::block::Block;
 use crate::core::chain::ChainState;
+#[cfg(feature = "gpu")]
 use crate::core::consensus::*;
 use crate::core::mempool::Mempool;
+#[cfg(feature = "gpu")]
 use crate::core::tx::Transaction;
 use crate::wallet::Wallet;
 
+#[cfg(feature = "gpu")]
 const KERNEL_SRC: &str = r#"
 __constant uint K[64] = {
     0x428a2f98U,0x71374491U,0xb5c0fbcfU,0xe9b5dba5U,0x3956c25bU,0x59f111f1U,0x923f82a4U,0xab1c5ed5U,
@@ -98,6 +107,7 @@ __kernel void mine(
 }
 "#;
 
+#[cfg(feature = "gpu")]
 pub struct GpuMiner {
     pub chain: Arc<ChainState>,
     pub mempool: Mempool,
@@ -109,6 +119,7 @@ pub struct GpuMiner {
     pub available: Arc<AtomicBool>,
 }
 
+#[cfg(feature = "gpu")]
 impl GpuMiner {
     pub fn new(chain: Arc<ChainState>, mempool: Mempool, wallet: Arc<Wallet>) -> Self {
         let m = Self {
@@ -153,11 +164,13 @@ impl GpuMiner {
         let supply = *self.chain.supply.read();
         let reward = block_reward(height, supply);
         if reward == 0 { return None; }
-        let coinbase = Transaction::coinbase(height, reward, self.wallet.key.read().script_pubkey());
-        let snap = self.mempool.snapshot(500);
+        let (snap, fees) = self.mempool.snapshot_with_fees(500);
         let txids: Vec<[u8; 32]> = snap.iter().map(|t| t.txid()).collect();
+        let coinbase = Transaction::coinbase(height, reward.saturating_add(fees),
+            self.wallet.key.read().script_pubkey());
         let mut txs = vec![coinbase];
         txs.extend(snap);
+        crate::core::block::add_witness_commitment(&mut txs);
         let bits = self.chain.current_bits();
         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         Some((Block::new(prev, txs, bits, ts), txids))
@@ -251,4 +264,33 @@ impl GpuMiner {
             }
         }
     }
+}
+
+#[cfg(not(feature = "gpu"))]
+pub struct GpuMiner {
+    pub chain: Arc<ChainState>,
+    pub mempool: Mempool,
+    pub wallet: Arc<Wallet>,
+    pub running: Arc<AtomicBool>,
+    pub hashrate: Arc<AtomicU64>,
+    pub blocks_found: Arc<AtomicU64>,
+    pub device_name: Arc<parking_lot::RwLock<String>>,
+    pub available: Arc<AtomicBool>,
+}
+
+#[cfg(not(feature = "gpu"))]
+impl GpuMiner {
+    pub fn new(chain: Arc<ChainState>, mempool: Mempool, wallet: Arc<Wallet>) -> Self {
+        Self {
+            chain, mempool, wallet,
+            running: Arc::new(AtomicBool::new(false)),
+            hashrate: Arc::new(AtomicU64::new(0)),
+            blocks_found: Arc::new(AtomicU64::new(0)),
+            device_name: Arc::new(parking_lot::RwLock::new(
+                "GPU mining disabled in this build".to_string())),
+            available: Arc::new(AtomicBool::new(false)),
+        }
+    }
+    pub fn start(self: &Arc<Self>) {}
+    pub fn stop(&self) {}
 }
