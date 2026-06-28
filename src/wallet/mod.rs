@@ -1,0 +1,161 @@
+pub mod address;
+pub mod encrypt;
+pub mod totp;
+
+use std::sync::Arc;
+use parking_lot::RwLock;
+use anyhow::{Result, anyhow};
+use crate::wallet::address::{KeyPair, decode_address, script_p2pkh};
+use crate::core::chain::ChainState;
+use crate::core::tx::{Transaction, TxIn, TxOut};
+
+pub struct Wallet {
+    pub key: Arc<RwLock<KeyPair>>,
+    pub path: String,
+}
+
+impl Wallet {
+    fn passphrase() -> Option<String> {
+        std::env::var("THOCOIN_WALLET_PASS").ok().filter(|s| !s.is_empty())
+    }
+
+    fn allow_plaintext() -> bool {
+        std::env::var("THOCOIN_WALLET_ALLOW_PLAINTEXT").ok().as_deref() == Some("1")
+    }
+
+    fn persist(path: &str, mnemonic: &str) -> Result<()> {
+        match Self::passphrase() {
+            Some(pass) => {
+                let blob = encrypt::encrypt(mnemonic.as_bytes(), &pass)?;
+                std::fs::write(path, blob)?;
+            }
+            None => {
+
+                if Self::allow_plaintext() {
+                    eprintln!("[WALLET] WARNING: seed stored in PLAINTEXT (THOCOIN_WALLET_ALLOW_PLAINTEXT=1).");
+                    std::fs::write(path, mnemonic)?;
+                } else {
+                    return Err(anyhow!(
+                        "refusing to store a plaintext wallet: set THOCOIN_WALLET_PASS to encrypt \
+                         (or THOCOIN_WALLET_ALLOW_PLAINTEXT=1 to force plaintext)"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn load_or_create(path: &str) -> Result<Self> {
+        let key = match std::fs::read(path) {
+            Ok(raw) => {
+                let text = if encrypt::is_encrypted(&raw) {
+                    let pass = Self::passphrase()
+                        .ok_or_else(|| anyhow!("wallet is encrypted: set THOCOIN_WALLET_PASS"))?;
+                    let pt = encrypt::decrypt(&raw, &pass)?;
+                    String::from_utf8(pt).map_err(|_| anyhow!("decrypted wallet is invalid"))?
+                } else {
+                    String::from_utf8(raw).map_err(|_| anyhow!("wallet file is not UTF-8"))?
+                };
+                let s = text.trim();
+                if s.split_whitespace().count() >= 24 {
+                    KeyPair::from_mnemonic(s)?
+                } else if let Ok(bytes) = hex::decode(s) {
+                    KeyPair::from_bytes(&bytes)?
+                } else {
+                    let k = KeyPair::new();
+                    Self::persist(path, k.mnemonic())?;
+                    k
+                }
+            }
+            Err(_) => {
+                let k = KeyPair::new();
+                Self::persist(path, k.mnemonic())?;
+                k
+            }
+        };
+        Ok(Wallet { key: Arc::new(RwLock::new(key)), path: path.into() })
+    }
+
+    pub fn replace_from_mnemonic(&self, phrase: &str) -> Result<()> {
+        let k = KeyPair::from_mnemonic(phrase)?;
+        Self::persist(&self.path, k.mnemonic())?;
+        *self.key.write() = k;
+        Ok(())
+    }
+
+    pub fn generate_new(&self) -> Result<()> {
+        let k = KeyPair::new();
+        Self::persist(&self.path, k.mnemonic())?;
+        *self.key.write() = k;
+        Ok(())
+    }
+
+    pub fn address(&self) -> String { self.key.read().address() }
+    pub fn mnemonic(&self) -> String { self.key.read().mnemonic().to_string() }
+
+    pub fn balance(&self, chain: &ChainState) -> u64 {
+        chain.balance_for_script(&self.key.read().script_pubkey())
+    }
+
+    /// `fee` is a floor; the final fee converges to max(floor, size-based min relay fee).
+    pub fn send(&self, chain: &ChainState, to: &str, amount: u64, fee: u64) -> Result<Transaction> {
+        use crate::core::consensus::{COINBASE_MATURITY, MIN_RELAY_FEE_PER_KB};
+        let to_hash = decode_address(to)?;
+        let to_script = script_p2pkh(&to_hash);
+        let my_script = self.key.read().script_pubkey();
+        let next_height = *chain.height.read() + 1;
+
+        // Select only mature UTXOs (coinbase outputs need 100 confirmations).
+        let mut candidates: Vec<(crate::core::tx::OutPoint, u64)> = {
+            let utxo = chain.utxo.read();
+            let cb = chain.coinbase_at.read();
+            utxo.iter()
+                .filter(|(op, out)| out.script_pubkey == my_script
+                    && cb.get(op).map_or(true, |&h| next_height >= h + COINBASE_MATURITY))
+                .map(|(op, out)| (op.clone(), out.value))
+                .collect()
+        };
+        candidates.sort_by(|a, b| b.1.cmp(&a.1)); // largest first: fewer inputs, smaller tx, lower fee
+
+        let mut cur_fee = fee.max(1);
+        for _ in 0..16 {
+            let need = amount.checked_add(cur_fee).ok_or_else(|| anyhow!("amount+fee overflow"))?;
+            let mut inputs = Vec::new();
+            let mut collected = 0u64;
+            for (op, v) in &candidates {
+                inputs.push(op.clone());
+                collected += v;
+                if collected >= need { break; }
+            }
+            if collected < need { return Err(anyhow!("insufficient mature funds")); }
+
+            let key = self.key.read();
+            let tx_inputs: Vec<TxIn> = inputs.iter().map(|op| TxIn {
+                prev: op.clone(),
+                signature: vec![],
+                pubkey: key.pubkey_bytes(),
+                sequence: 0xffffffff,
+            }).collect();
+
+            let mut outputs = vec![TxOut { value: amount, script_pubkey: to_script.clone() }];
+            let change = collected - need;
+            if change > 0 {
+                outputs.push(TxOut { value: change, script_pubkey: my_script.clone() });
+            }
+
+            let mut tx = Transaction { version: 1, inputs: tx_inputs, outputs, lock_time: 0 };
+            for vin in 0..tx.inputs.len() {
+                let h = tx.sighash(vin);
+                tx.inputs[vin].signature = key.sign(&h);
+            }
+            drop(key);
+
+            let size = tx.size() as u64;
+            let min_fee = size.saturating_mul(MIN_RELAY_FEE_PER_KB).div_ceil(1000);
+            if cur_fee >= min_fee {
+                return Ok(tx);
+            }
+            cur_fee = min_fee; // ML-DSA inputs are large (~7KB), raise fee and rebuild
+        }
+        Err(anyhow!("fee did not converge"))
+    }
+}
