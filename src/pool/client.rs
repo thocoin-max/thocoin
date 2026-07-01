@@ -13,7 +13,7 @@ use parking_lot::RwLock;
 use crate::pool::{ServerMsg, hex32, header_from_job};
 use crate::core::hash::hash_meets_target;
 
-pub const DEFAULT_POOL: &str = "thocoin.org";
+pub const DEFAULT_POOL: &str = "pool.thocoin.org";
 const DEFAULT_PORT: u16 = 23333;
 
 /// Accepts "host", "host:port", "ip", "ip:port" and always returns "host:port".

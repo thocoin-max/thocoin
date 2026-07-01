@@ -241,6 +241,28 @@ fn main() -> eframe::Result<()> {
         rt.block_on(async move { let _ = p2p_clone.run().await; });
     });
 
+    // Wait for initial sync so the supply/height every user sees matches the
+    // network. Without this, a freshly downloaded GUI shows local (0) values
+    // until sync catches up, so different users would briefly disagree.
+    {
+        use std::sync::atomic::Ordering;
+        let mut waited = 0;
+        loop {
+            let best = p2p.best_height.load(Ordering::SeqCst);
+            let cur = *chain.height.read();
+            if best != 0 && cur + 1 >= best {
+                write_log(&format!("synced to height {} (peer best {})", cur, best));
+                break;
+            }
+            if waited >= 20 {
+                write_log("sync wait timeout, continuing");
+                break;
+            }
+            waited += 1;
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+
     let size = [1180.0_f32, 760.0_f32];
     let opts = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

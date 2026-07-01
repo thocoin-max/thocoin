@@ -19,6 +19,21 @@ pub const PPLNS_WINDOW: usize = 1000;
 
 pub const SHARE_SHIFT: u32 = 12;
 
+/// A mining template plus the height it was built for. Carrying the height with
+/// the template (instead of re-reading chain.height when emitting a job) is what
+/// keeps the job's `height`, the share check, and the block-apply all referring
+/// to the SAME block — even if the tip advances between building and using it.
+#[derive(Clone)]
+pub struct Template {
+    pub block: Block,
+    pub height: u64,
+}
+
+impl std::ops::Deref for Template {
+    type Target = Block;
+    fn deref(&self) -> &Block { &self.block }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum ClientMsg {
@@ -91,7 +106,7 @@ impl Pool {
         if b == 0 { POW_LIMIT_BITS } else { b }
     }
 
-    pub fn build_template(&self) -> Block {
+    pub fn build_template(&self) -> Template {
         self.build_template_fee(1.0)
     }
 
@@ -100,7 +115,11 @@ impl Pool {
     /// payouts atomic with the won block: no separate payout tx, nothing can get
     /// stuck in the mempool, and miners are credited the instant the block applies.
     /// `fee_frac` in [0,1] is the share kept by the pool wallet (e.g. 0.99 = 1% fee).
-    pub fn build_template_fee(&self, fee_frac: f64) -> Block {
+    ///
+    /// The height is captured ONCE here and travels with the template, so the job
+    /// height, the share check, and on_block_won can never disagree about which
+    /// block this template represents.
+    pub fn build_template_fee(&self, fee_frac: f64) -> Template {
         let prev = *self.chain.tip.read();
         let height = *self.chain.height.read() + 1;
         let supply = *self.chain.supply.read();
@@ -122,7 +141,7 @@ impl Pool {
             .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         let mut b = Block::new(prev, txs, bits, ts);
         b.header.nonce = 0;
-        b
+        Template { block: b, height }
     }
 
     /// Split `total` across PPLNS shareholders by share count. A `fee_frac` cut and
@@ -163,8 +182,8 @@ impl Pool {
         outs
     }
 
-    pub fn make_job(&self, tmpl: &Block, extranonce: u32) -> ServerMsg {
-        self.make_job_at(tmpl, extranonce, tmpl.header.timestamp)
+    pub fn make_job(&self, tmpl: &Template, extranonce: u32) -> ServerMsg {
+        self.make_job_at(tmpl, extranonce, tmpl.block.header.timestamp)
     }
 
     /// Build a job carrying an explicit timestamp. Rolling the timestamp gives the
@@ -172,28 +191,31 @@ impl Pool {
     /// validated against the same template still hash identically. This is what
     /// keeps blocks coming at mainnet difficulty (one fixed 2^32 nonce space is
     /// too small to reliably contain a valid block nonce).
-    pub fn make_job_at(&self, tmpl: &Block, extranonce: u32, timestamp: u64) -> ServerMsg {
+    ///
+    /// `height` now comes from the template, not a live chain read — so the value
+    /// the miner sees matches the block its shares will actually build.
+    pub fn make_job_at(&self, tmpl: &Template, extranonce: u32, timestamp: u64) -> ServerMsg {
         let mut jid = self.job_id.write();
         *jid += 1;
         ServerMsg::Job {
             job_id: *jid,
-            prev: hex::encode(tmpl.header.prev_hash),
-            merkle: hex::encode(tmpl.header.merkle_root),
-            bits: tmpl.header.bits,
-            height: *self.chain.height.read() + 1,
+            prev: hex::encode(tmpl.block.header.prev_hash),
+            merkle: hex::encode(tmpl.block.header.merkle_root),
+            bits: tmpl.block.header.bits,
+            height: tmpl.height,
             timestamp,
-            share_bits: Self::share_bits(tmpl.header.bits),
+            share_bits: Self::share_bits(tmpl.block.header.bits),
             extranonce,
         }
     }
 
-    pub fn check_share(&self, tmpl: &Block, nonce: u32, ts: u64, address: &str)
+    pub fn check_share(&self, tmpl: &Template, nonce: u32, ts: u64, address: &str)
         -> (bool, bool) {
-        let mut hdr = tmpl.header.clone();
+        let mut hdr = tmpl.block.header.clone();
         hdr.nonce = nonce;
         hdr.timestamp = ts;
         let h = hdr.hash();
-        let net_bits = tmpl.header.bits;
+        let net_bits = tmpl.block.header.bits;
         let share_bits = Self::share_bits(net_bits);
 
         if !hash_meets_target(&h, share_bits) {
@@ -220,17 +242,19 @@ impl Pool {
         *self.share_count.write().entry(address.to_string()).or_insert(0) += 1;
     }
 
-    pub fn on_block_won(&self, tmpl: &Block, nonce: u32, ts: u64) -> anyhow::Result<u64> {
+    pub fn on_block_won(&self, tmpl: &Template, nonce: u32, ts: u64) -> anyhow::Result<u64> {
         // The template's coinbase already splits the reward among PPLNS
         // shareholders, so winning the block IS the payout — applying it credits
         // every miner atomically. No separate payout tx, nothing to mature.
-        if tmpl.header.prev_hash != *self.chain.tip.read() {
+        if tmpl.block.header.prev_hash != *self.chain.tip.read() {
             anyhow::bail!("stale template (tip advanced); win discarded");
         }
-        let mut block = tmpl.clone();
+        let mut block = tmpl.block.clone();
         block.header.nonce = nonce;
         block.header.timestamp = ts;
-        let height = *self.chain.height.read() + 1;
+        // Use the template's captured height — guaranteed consistent with the job
+        // height the miner mined and with the prev_hash we just re-checked.
+        let height = tmpl.height;
         self.chain.apply_block(&block, height)?;
         let reward: u64 = block.transactions[0].outputs.iter().map(|o| o.value).sum();
         Ok(reward)

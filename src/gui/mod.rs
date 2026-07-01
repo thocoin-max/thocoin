@@ -14,7 +14,7 @@ use crate::miner::gpu::GpuMiner;
 use crate::wallet::Wallet;
 
 /// Address of the official ThoCoin pool. Users join this with one click.
-pub const OFFICIAL_POOL: &str = "thocoin.org";
+pub const OFFICIAL_POOL: &str = "pool.thocoin.org";
 
 #[derive(Debug, Clone)]
 pub enum HistoryEntry {
@@ -2037,12 +2037,8 @@ impl App {
             .show(ui, |ui| {
                 ui.label(RichText::new("Statistics").size(12.5).color(t.text_dim));
                 ui.add_space(10.0);
-                kv(ui, &t, "Blocks (CPU + GPU)", &format!("{}", found_cpu + found_gpu));
-                kv(ui, &t, "Block height", &format!("{}", *self.chain.height.read()));
-                let next = crate::core::consensus::block_reward(*self.chain.height.read()+1, *self.chain.supply.read());
-                kv(ui, &t, "Current reward", &fmt_coin(next));
-                kv(ui, &t, "Reward address", &short_addr(&self.wallet.address()));
-                kv(ui, &t, "Difficulty", &format!("0x{:08x}", self.chain.current_bits()));
+                kv(ui, &t, "Total Supply", &fmt_coin(crate::core::consensus::MAX_SUPPLY));
+                kv(ui, &t, "Circulating Supply (mined)", &fmt_coin(*self.chain.supply.read()));
             });
     }
 

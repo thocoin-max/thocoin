@@ -79,6 +79,25 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Live height reporter. The boot banner above prints height ONCE; without this
+    // the console line stays frozen while the chain advances, making it look out
+    // of sync with the job heights miners receive. This prints the real tip
+    // height on an interval so the two always agree.
+    {
+        let chain = chain.clone();
+        std::thread::spawn(move || {
+            let mut last = u64::MAX;
+            loop {
+                let h = *chain.height.read();
+                if h != last {
+                    println!(" Height      : {} (job height = {})", h, h + 1);
+                    last = h;
+                }
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        });
+    }
+
     {
         let pool_bg = pool.clone();
         std::thread::spawn(move || {
@@ -213,7 +232,7 @@ fn handle_client(stream: TcpStream, pool: Arc<Pool>, extranonce: u32, registry: 
                     if is_block {
                         match pool.on_block_won(&tmpl, nonce, timestamp) {
                             Ok(reward) => {
-                                let h = *pool.chain.height.read();
+                                let h = tmpl.height;
                                 println!("[*] BLOCK! height={h} reward={reward} by {addr}");
                                 let mut w = writer.lock();
                                 send(&mut w, &ServerMsg::BlockFound { height: h, reward })?;

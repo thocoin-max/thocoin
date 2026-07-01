@@ -9,34 +9,40 @@ pub const LWMA_WINDOW: u64 = 90;
 pub const COINBASE_MATURITY: u64 = 0;
 pub const MAX_BLOCK_SIZE: usize = 1_000_000;
 pub const MAX_BLOCK_SIGOPS: usize = 4_000;
-pub const GENESIS_BITS: u32 = 0x1d00ffff;
-pub const POW_LIMIT_BITS: u32 = 0x1d00ffff;
+pub const GENESIS_BITS: u32 = 0x1f00ffff;
+pub const POW_LIMIT_BITS: u32 = 0x1f00ffff;
 
 // Mainnet genesis is fully deterministic: fixed timestamp, nonce, and embedded
 // message. The block is identified by GENESIS_HASH_HEX instead of PoW, so no
 // mining is needed at first start and every parameter below is locked: changing
 // any value that affects the genesis block changes its hash and the node
 // refuses to start.
-pub const GENESIS_TIMESTAMP: u64 = 1782698400;
+//
+// NEW MAINNET FORK: timestamp + message changed -> new genesis hash. Combined
+// with the bumped NETWORK_MAGIC below, nodes on the old chain can neither
+// connect nor sync, so this starts a clean chain at 0.
+pub const GENESIS_TIMESTAMP: u64 = 1782700000;
 pub const GENESIS_NONCE: u32 = 0;
-pub const GENESIS_MESSAGE: &str = "ThoCoin post-quantum mainnet 29/Jun/2026 ML-DSA-87";
+pub const GENESIS_MESSAGE: &str = "ThoCoin post-quantum mainnet v3 genesis ML-DSA-87";
 
-// Fill with the value printed by `cargo test genesis_is_pinned -- --nocapture`
-// before building the release. Empty string disables the check (dev mode).
-// STEP: leave empty -> run test -> paste printed GENESIS_HASH here -> rebuild.
-pub const GENESIS_HASH_HEX: &str = "84a4f8b7febd37d68f878421d6072601a068e16f9b795c1d15b031d777e50874";
+// Re-pin after the fork:
+//   1. leave this "" (empty = dev/no-check)
+//   2. cargo test genesis_is_pinned -- --nocapture   -> prints GENESIS_HASH=...
+//   3. paste that value here
+//   4. cargo build --release
+pub const GENESIS_HASH_HEX: &str = "79f329f54e72946ebc2a0eb1744a19e4ede9efc11bc15d35649b2f4cf4b06b25";
 
-pub const NETWORK_MAGIC: u32 = 0xC222C224;
+// Bumped so the old network's peers are rejected at handshake.
+pub const NETWORK_MAGIC: u32 = 0xC222C226;
 pub const P2P_PORT: u16 = 22221;
 pub const RPC_PORT: u16 = 22222;
 pub const ADDRESS_PREFIX: u8 = 0x32;
 pub const MIN_RELAY_FEE_PER_KB: u64 = 1_000;
 
-// Fill with at least two reachable nodes ("host:22221" or "ip:22221") before
-// the mainnet release; new nodes use these to find the network. Until then,
-// peers can be supplied with the THOCOIN_PEERS environment variable.
+// New nodes use these to find the network. Peers can also be supplied with the
+// THOCOIN_PEERS environment variable (comma-separated host:port).
 pub const SEED_NODES: &[&str] = &[
-    "thocoin.duckdns.org:22221",
+    "thocoin.org:22221",
 ];
 
 pub const CHECKPOINTS: &[(u64, &str)] = &[
