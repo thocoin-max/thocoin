@@ -20,7 +20,7 @@ impl Wallet {
     }
 
     fn allow_plaintext() -> bool {
-        std::env::var("THOCOIN_WALLET_ALLOW_PLAINTEXT").ok().as_deref() == Some("1")
+        std::env::var("THOCOIN_WALLET_ALLOW_PLAINTEXT").ok().as_deref() != Some("0")
     }
 
     fn persist(path: &str, mnemonic: &str) -> Result<()> {
