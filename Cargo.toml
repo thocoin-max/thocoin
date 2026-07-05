@@ -41,18 +41,13 @@ gpu = ["dep:ocl"]
 [build-dependencies]
 winres = "0.1"
 
+# thocoind: the always-on node (run on the 24/7 machine as the network seed).
 [[bin]]
 name = "thocoind"
 path = "src/main.rs"
 
+# thocoin-gui: the mining app users download. Contains BOTH mining modes
+# (solo + pool) in one process on one shared chain. No separate pool binary.
 [[bin]]
 name = "thocoin-gui"
 path = "src/gui_main.rs"
-
-[[bin]]
-name = "thocoin-pool"
-path = "src/pool_server.rs"
-
-[[bin]]
-name = "thocoin-pool-miner"
-path = "src/pool_miner.rs"

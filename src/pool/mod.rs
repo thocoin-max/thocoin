@@ -68,7 +68,7 @@ pub enum ServerMsg {
     #[serde(rename = "error")]
     Error { message: String },
     #[serde(rename = "poolstats")]
-    PoolStats { miners: u64, pool_hashrate: u64 },
+    PoolStats { miners: u64, pool_hashrate: u64, blocks_found: u64 },
 }
 
 #[derive(Clone)]

@@ -2154,6 +2154,7 @@ impl App {
             let your_hr = s.hashrate.load(Ordering::Relaxed) as f64;
             let pool_hr = s.pool_hashrate.load(Ordering::Relaxed) as f64;
             let miners = s.pool_miners.load(Ordering::Relaxed);
+            let blocks = s.pool_blocks.load(Ordering::Relaxed);
             let height = s.height.load(Ordering::Relaxed);
             let worker = s.worker_id.read().clone();
             let status = s.last_status.read().clone();
@@ -2161,6 +2162,7 @@ impl App {
             let hr_s = fmt_hashrate(your_hr);
             let phr_s = fmt_hashrate(pool_hr);
             let miners_s = format!("{}", miners);
+            let _ = blocks;
             pool_stat_row(ui, &t, [
                 ("Your Hashrate", &hr_s),
                 ("Pool Hashrate", &phr_s),

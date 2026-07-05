@@ -1,9 +1,4 @@
 // In-process pool SERVER used by the wallet GUI "Create Pool" screen.
-// Wraps the existing Pool (which already does PPLNS + payouts) with a TCP
-// listener, live stats, and start/stop control. Because it shares the wallet's
-// ChainState and Mempool, blocks the pool wins are applied directly to the
-// same chain the wallet is on — no separate process or node RPC needed.
-
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -17,7 +12,6 @@ use crate::core::mempool::Mempool;
 use crate::wallet::Wallet;
 use crate::pool::{Pool, ClientMsg, ServerMsg};
 
-// Per-connection reported hashrate, keyed by the unique extranonce we assign.
 type Registry = Arc<RwLock<HashMap<u32, u64>>>;
 
 fn now_secs() -> u64 {
@@ -28,7 +22,7 @@ fn now_secs() -> u64 {
 pub struct PoolConfig {
     pub name: String,
     pub fee_percent: f64,
-    pub min_payout: u64,     // in base units (COIN)
+    pub min_payout: u64,
     pub port: u16,
 }
 
@@ -36,7 +30,7 @@ pub struct PoolServerStats {
     pub running: AtomicBool,
     pub online_miners: AtomicU64,
     pub blocks_found: AtomicU64,
-    pub pool_hashrate: AtomicU64,   // sum of miner-reported hashrates
+    pub pool_hashrate: AtomicU64,
     pub total_shares: AtomicU64,
     pub last_status: RwLock<String>,
     pub pool_url: RwLock<String>,
@@ -100,7 +94,6 @@ impl EmbeddedPool {
         let extranonce_seq = Arc::new(AtomicU32::new(1));
         let registry: Registry = Arc::new(RwLock::new(HashMap::new()));
 
-        // Payout background loop.
         {
             let pool_bg = pool.clone();
             let running_bg = running.clone();
@@ -115,7 +108,6 @@ impl EmbeddedPool {
             });
         }
 
-        // Pool-wide stats from miner-reported hashrates.
         {
             let stats_hr = stats.clone();
             let running_hr = running.clone();
@@ -135,7 +127,6 @@ impl EmbeddedPool {
             });
         }
 
-        // Accept loop.
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if !running.load(Ordering::SeqCst) { break; }
@@ -185,9 +176,6 @@ fn handle_client(
     stats: &Arc<PoolServerStats>,
     registry: Registry,
 ) -> anyhow::Result<()> {
-    // The listener is non-blocking, and accepted sockets inherit that on Windows.
-    // A non-blocking read makes reader.lines() return WouldBlock immediately and
-    // the loop would close the miner. Force blocking mode for this connection.
     stream.set_nonblocking(false).ok();
     stream.set_read_timeout(Some(Duration::from_secs(120))).ok();
     let writer = Arc::new(Mutex::new(stream.try_clone()?));
@@ -196,9 +184,6 @@ fn handle_client(
     let template = Arc::new(RwLock::new(pool.build_template()));
     let alive = Arc::new(AtomicBool::new(true));
 
-    // Job-refresh thread: roll the timestamp so the miner always has a fresh
-    // nonce space (a single fixed 2^32 space rarely contains a valid block nonce
-    // at mainnet difficulty). Rebuild the template only when the tip advances.
     {
         let pool = pool.clone();
         let writer = writer.clone();
@@ -206,6 +191,8 @@ fn handle_client(
         let address = address.clone();
         let alive = alive.clone();
         let running = running.clone();
+        let registry = registry.clone();
+        let stats = stats.clone();
         std::thread::spawn(move || {
             while alive.load(Ordering::SeqCst) && running.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_secs(4));
@@ -216,8 +203,14 @@ fn handle_client(
                 }
                 let tmpl = template.read().clone();
                 let job = pool.make_job_at(&tmpl, extranonce, now_secs());
+                let (miners, total_hr) = {
+                    let r = registry.read();
+                    (r.len() as u64, r.values().sum::<u64>())
+                };
+                let blocks = stats.blocks_found.load(Ordering::Relaxed);
                 let mut w = writer.lock();
                 if send(&mut w, &job).is_err() { break; }
+                if send(&mut w, &ServerMsg::PoolStats { miners, pool_hashrate: total_hr, blocks_found: blocks }).is_err() { break; }
             }
         });
     }

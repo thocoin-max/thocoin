@@ -6,11 +6,16 @@ pub const INITIAL_REWARD: u64 = 22_020_000_000;
 pub const HALVING_INTERVAL: u64 = 458_440;
 pub const TARGET_BLOCK_TIME: u64 = 275;
 pub const LWMA_WINDOW: u64 = 90;
-pub const COINBASE_MATURITY: u64 = 0;
+// Coinbase must mature before it can be spent: prevents spending rewards that a
+// reorg (solo vs pool racing the same tip) could roll back.
+pub const COINBASE_MATURITY: u64 = 100;
 pub const MAX_BLOCK_SIZE: usize = 1_000_000;
 pub const MAX_BLOCK_SIGOPS: usize = 4_000;
-pub const GENESIS_BITS: u32 = 0x1f00ffff;
-pub const POW_LIMIT_BITS: u32 = 0x1f00ffff;
+// Difficulty floor. 0x1d00ffff is ~65536x harder than 0x1f00ffff, so a single
+// CPU/GPU no longer produces blocks instantly; block time converges to
+// TARGET_BLOCK_TIME once LWMA fills its window.
+pub const GENESIS_BITS: u32 = 0x1d00ffff;
+pub const POW_LIMIT_BITS: u32 = 0x1d00ffff;
 
 // Mainnet genesis is fully deterministic: fixed timestamp, nonce, and embedded
 // message. The block is identified by GENESIS_HASH_HEX instead of PoW, so no
@@ -18,9 +23,9 @@ pub const POW_LIMIT_BITS: u32 = 0x1f00ffff;
 // any value that affects the genesis block changes its hash and the node
 // refuses to start.
 //
-// NEW MAINNET FORK: timestamp + message changed -> new genesis hash. Combined
-// with the bumped NETWORK_MAGIC below, nodes on the old chain can neither
-// connect nor sync, so this starts a clean chain at 0.
+// NEW MAINNET FORK (v3): timestamp + message changed -> new genesis hash.
+// Combined with the bumped NETWORK_MAGIC below, nodes on any old chain can
+// neither connect nor sync, so this starts a clean chain at height 0.
 pub const GENESIS_TIMESTAMP: u64 = 1782700000;
 pub const GENESIS_NONCE: u32 = 0;
 pub const GENESIS_MESSAGE: &str = "ThoCoin post-quantum mainnet v3 genesis ML-DSA-87";
@@ -30,17 +35,18 @@ pub const GENESIS_MESSAGE: &str = "ThoCoin post-quantum mainnet v3 genesis ML-DS
 //   2. cargo test genesis_is_pinned -- --nocapture   -> prints GENESIS_HASH=...
 //   3. paste that value here
 //   4. cargo build --release
-pub const GENESIS_HASH_HEX: &str = "79f329f54e72946ebc2a0eb1744a19e4ede9efc11bc15d35649b2f4cf4b06b25";
+pub const GENESIS_HASH_HEX: &str = "978736d5c4f0a065fb695b704a52fd505492990679a2752472d2f5cf3e91b343";
 
-// Bumped so the old network's peers are rejected at handshake.
+// Bumped so peers on any earlier chain are rejected at handshake.
 pub const NETWORK_MAGIC: u32 = 0xC222C226;
 pub const P2P_PORT: u16 = 22221;
 pub const RPC_PORT: u16 = 22222;
 pub const ADDRESS_PREFIX: u8 = 0x32;
 pub const MIN_RELAY_FEE_PER_KB: u64 = 1_000;
 
-// New nodes use these to find the network. Peers can also be supplied with the
-// THOCOIN_PEERS environment variable (comma-separated host:port).
+// The always-on node. Every wallet/pool that is downloaded finds the network
+// through this. Additional peers can be supplied with the THOCOIN_PEERS
+// environment variable (comma-separated host:port).
 pub const SEED_NODES: &[&str] = &[
     "thocoin.org:22221",
 ];

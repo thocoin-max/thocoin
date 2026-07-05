@@ -13,7 +13,7 @@ use parking_lot::RwLock;
 use crate::pool::{ServerMsg, hex32, header_from_job};
 use crate::core::hash::hash_meets_target;
 
-pub const DEFAULT_POOL: &str = "pool.thocoin.org";
+pub const DEFAULT_POOL: &str = "thocoin.org";
 const DEFAULT_PORT: u16 = 23333;
 
 /// Accepts "host", "host:port", "ip", "ip:port" and always returns "host:port".
@@ -50,6 +50,7 @@ pub struct PoolClientStats {
     pub height: AtomicU64,          // current job height
     pub pool_hashrate: AtomicU64,   // total pool hashrate (all miners)
     pub pool_miners: AtomicU64,     // number of miners connected to the pool
+    pub pool_blocks: AtomicU64,     // total blocks the pool has found
     pub last_status: RwLock<String>,
     pub worker_id: RwLock<String>,
     pub pool_url: RwLock<String>,
@@ -65,6 +66,7 @@ impl Default for PoolClientStats {
             height: AtomicU64::new(0),
             pool_hashrate: AtomicU64::new(0),
             pool_miners: AtomicU64::new(0),
+            pool_blocks: AtomicU64::new(0),
             last_status: RwLock::new("Idle".into()),
             worker_id: RwLock::new(String::new()),
             pool_url: RwLock::new(String::new()),
@@ -208,9 +210,10 @@ impl PoolClient {
                 ServerMsg::Error { message } => {
                     *stats.last_status.write() = format!("Pool: {message}");
                 }
-                ServerMsg::PoolStats { miners, pool_hashrate } => {
+                ServerMsg::PoolStats { miners, pool_hashrate, blocks_found } => {
                     stats.pool_miners.store(miners, Ordering::Relaxed);
                     stats.pool_hashrate.store(pool_hashrate, Ordering::Relaxed);
+                    stats.pool_blocks.store(blocks_found, Ordering::Relaxed);
                 }
             }
         }
