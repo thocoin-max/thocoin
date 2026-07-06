@@ -1474,7 +1474,10 @@ impl App {
         match self.wallet.send(&self.chain, &to, satoshi, fee) {
             Ok(tx) => {
                 let txid = hash_to_hex(&tx.txid());
-                self.mempool.add(tx);
+                if let Err(e) = self.mempool.accept(&self.chain, tx) {
+                    self.notify(format!("Tx rejected: {}", e), true);
+                    return;
+                }
                 self.history.lock().push(HistoryEntry::Tx {
                     txid: txid.clone(), amount: satoshi, is_received: false,
                     timestamp: chrono::Utc::now().timestamp() as u64, confirmed: false, address: to,
@@ -1897,7 +1900,13 @@ impl App {
                 if a <= 0.0 { return "Error: invalid amount".into(); }
                 let sat = (a * COIN as f64) as u64;
                 match self.wallet.send(&self.chain, addr, sat, 1000) {
-                    Ok(tx) => { let id = hash_to_hex(&tx.txid()); self.mempool.add(tx); format!("ok txid={}", id) }
+                    Ok(tx) => {
+                        let id = hash_to_hex(&tx.txid());
+                        match self.mempool.accept(&self.chain, tx) {
+                            Ok(_) => format!("ok txid={}", id),
+                            Err(e) => format!("Error: {}", e),
+                        }
+                    }
                     Err(e) => format!("Error: {}", e),
                 }
             }

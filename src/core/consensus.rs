@@ -8,7 +8,7 @@ pub const TARGET_BLOCK_TIME: u64 = 275;
 pub const LWMA_WINDOW: u64 = 90;
 // Coinbase must mature before it can be spent: prevents spending rewards that a
 // reorg (solo vs pool racing the same tip) could roll back.
-pub const COINBASE_MATURITY: u64 = 100;
+pub const COINBASE_MATURITY: u64 = 0;
 pub const MAX_BLOCK_SIZE: usize = 1_000_000;
 pub const MAX_BLOCK_SIGOPS: usize = 4_000;
 // Difficulty floor. 0x1d00ffff is ~65536x harder than 0x1f00ffff, so a single
@@ -26,19 +26,19 @@ pub const POW_LIMIT_BITS: u32 = 0x1d00ffff;
 // NEW MAINNET FORK (v3): timestamp + message changed -> new genesis hash.
 // Combined with the bumped NETWORK_MAGIC below, nodes on any old chain can
 // neither connect nor sync, so this starts a clean chain at height 0.
-pub const GENESIS_TIMESTAMP: u64 = 1782700000;
+pub const GENESIS_TIMESTAMP: u64 = 1783354820;
 pub const GENESIS_NONCE: u32 = 0;
-pub const GENESIS_MESSAGE: &str = "ThoCoin post-quantum mainnet v3 genesis ML-DSA-87";
+pub const GENESIS_MESSAGE: &str = "ThoCoin — Owned by no one, belongs to everyone";
 
 // Re-pin after the fork:
 //   1. leave this "" (empty = dev/no-check)
 //   2. cargo test genesis_is_pinned -- --nocapture   -> prints GENESIS_HASH=...
 //   3. paste that value here
 //   4. cargo build --release
-pub const GENESIS_HASH_HEX: &str = "978736d5c4f0a065fb695b704a52fd505492990679a2752472d2f5cf3e91b343";
+pub const GENESIS_HASH_HEX: &str = "d047e9db6fab5cce2f2936bec2177c83599e13d0e2b0029e653bb3c10a5afcca";
 
 // Bumped so peers on any earlier chain are rejected at handshake.
-pub const NETWORK_MAGIC: u32 = 0xC222C226;
+pub const NETWORK_MAGIC: u32 = 0xC222C227;
 pub const P2P_PORT: u16 = 22221;
 pub const RPC_PORT: u16 = 22222;
 pub const ADDRESS_PREFIX: u8 = 0x32;

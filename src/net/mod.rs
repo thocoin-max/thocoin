@@ -301,7 +301,8 @@ impl P2P {
                             let _ = tx.send(Msg::GetBlocks { from_height: self.chain.tip_height() + 1 });
                         }
                         Ok(false) => {}
-                        Err(_) => {
+                        Err(e) => {
+                            eprintln!("[P2P] reject block prev={} err={}", hex::encode(&prev[..4]), e);
                             if !self.chain.has_block(&prev) {
                                 let _ = tx.send(Msg::GetBlocks { from_height: self.chain.tip_height() + 1 });
                             } else {
