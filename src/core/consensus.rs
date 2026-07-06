@@ -48,7 +48,8 @@ pub const MIN_RELAY_FEE_PER_KB: u64 = 1_000;
 // through this. Additional peers can be supplied with the THOCOIN_PEERS
 // environment variable (comma-separated host:port).
 pub const SEED_NODES: &[&str] = &[
-    "thocoin.org:22221",
+    "1.251.195.89:22221",
+    "pool.thocoin.org:22221",
 ];
 
 pub const CHECKPOINTS: &[(u64, &str)] = &[
