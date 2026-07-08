@@ -241,6 +241,10 @@ fn main() -> eframe::Result<()> {
         rt.block_on(async move { let _ = p2p_clone.run().await; });
     });
 
+    // Start RPC (port 22222) so the block explorer / tools can query this node.
+    let _rpc = thocoin::rpc::start_rpc(chain.clone(), wallet.clone(), mempool.clone());
+    std::mem::forget(_rpc);
+
     // Wait for initial sync so the supply/height every user sees matches the
     // network. Without this, a freshly downloaded GUI shows local (0) values
     // until sync catches up, so different users would briefly disagree.

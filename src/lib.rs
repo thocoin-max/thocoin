@@ -5,3 +5,4 @@ pub mod miner;
 pub mod rpc;
 pub mod gui;
 pub mod pool;
+pub mod update;

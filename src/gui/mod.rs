@@ -16,7 +16,7 @@ use crate::wallet::Wallet;
 /// Address of the official ThoCoin pool. Users join this with one click.
 pub const OFFICIAL_POOL: &str = "pool.thocoin.org";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum HistoryEntry {
     Tx { txid: String, amount: u64, is_received: bool, timestamp: u64, confirmed: bool, address: String },
     Mining { height: u64, block_hash: String, reward: u64, timestamp: u64 },
@@ -158,6 +158,7 @@ pub struct App {
     logo_texture: Option<egui::TextureHandle>,
 
     style_applied: bool,
+    update_state: crate::update::UpdateState,
 
     // Pool mining state.
     pool_client: Arc<crate::pool::client::PoolClient>,
@@ -193,13 +194,13 @@ impl App {
             fee_rate: "0.00001000".into(),
             request_label: String::new(), request_amount: String::new(),
             invoices: Vec::new(),
-            contacts: Vec::new(),
+            contacts: load_contacts(),
             contact_name: String::new(), contact_addr: String::new(),
             console_input: String::new(),
-            console_log: vec!["ThoCoin console v0.1.0".into(), "Type 'help' for commands.".into()],
+            console_log: vec![format!("ThoCoin console v{}", crate::update::CURRENT_VERSION), "Type 'help' for commands.".into()],
             status: None,
             last_supply_seen: supply, last_height_seen: height,
-            history: Arc::new(Mutex::new(Vec::new())),
+            history: Arc::new(Mutex::new(load_history())),
             tx_filter: String::new(),
             mnemonic_input: String::new(), mnemonic_display, show_mnemonic: false,
             receive_addresses: vec![("(default)".into(), addr)],
@@ -226,6 +227,11 @@ impl App {
             totp_setup_step: 0,
             logo_texture: None,
             style_applied: false,
+            update_state: {
+                let u = crate::update::UpdateState::new();
+                u.spawn_check();
+                u
+            },
             pool_client: Arc::new(crate::pool::client::PoolClient::new()),
             embedded_pool: Arc::new(crate::pool::embedded::EmbeddedPool::new(
                 chain_for_pool, mempool_for_pool, wallet_for_pool)),
@@ -349,6 +355,7 @@ impl App {
             }
             self.last_height_seen = height;
             self.last_supply_seen = supply;
+            save_history(&self.history.lock());
         }
         let now = Instant::now();
         let dc = now.duration_since(self.last_hr_cpu_t);
@@ -370,6 +377,8 @@ impl App {
 
     fn reset_history_for_new_wallet(&mut self) {
         self.history.lock().clear();
+        save_history(&[]);
+        save_contacts(&[]);
         self.last_height_seen = 0;
         self.last_supply_seen = 0;
         self.qr_texture = None;
@@ -945,6 +954,25 @@ impl eframe::App for App {
             .frame(egui::Frame::none().fill(self.theme.topbar).inner_margin(Margin::symmetric(16.0, 10.0)))
             .show(ctx, |ui| self.topbar_ui(ui));
 
+        if let Some(newv) = self.update_state.update_available() {
+            let t = self.theme;
+            egui::TopBottomPanel::top("update_banner")
+                .exact_height(38.0)
+                .frame(egui::Frame::none().fill(Color32::from_rgb(40, 60, 90)).inner_margin(Margin::symmetric(16.0, 8.0)))
+                .show(ctx, |ui| {
+                    ui.horizontal_centered(|ui| {
+                        ui.label(RichText::new(format!("\u{2b06} New version {} available (you have {})", newv, crate::update::CURRENT_VERSION))
+                            .size(12.5).color(Color32::WHITE));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add(egui::Button::new(RichText::new("Download").size(12.0).color(Color32::WHITE).strong())
+                                .fill(t.accent).rounding(Rounding::same(6.0)).min_size(Vec2::new(0.0, 26.0))).clicked() {
+                                let _ = open_url(crate::update::DOWNLOAD_URL);
+                            }
+                        });
+                    });
+                });
+        }
+
         egui::TopBottomPanel::bottom("statusbar")
             .exact_height(32.0)
             .frame(egui::Frame::none().fill(self.theme.topbar).inner_margin(Margin::symmetric(16.0, 6.0)))
@@ -1172,7 +1200,7 @@ impl App {
             ui.add_space(10.0);
             ui.vertical(|ui| {
                 ui.label(RichText::new("ThoCoin Wallet").size(14.0).strong().color(t.text_strong));
-                ui.label(RichText::new("v0.1.0").size(10.0).color(t.text_dim));
+                ui.label(RichText::new(format!("v{}", crate::update::CURRENT_VERSION)).size(10.0).color(t.text_dim));
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if icon_btn(ui, &t, "🔧", "Tools").clicked() { self.tab = Tab::Console; }
@@ -1449,7 +1477,7 @@ impl App {
                     });
                 ui.add_space(5.0);
             }
-            if let Some(i) = to_remove { self.contacts.remove(i); }
+            if let Some(i) = to_remove { self.contacts.remove(i); save_contacts(&self.contacts); }
             if let Some(a) = to_pay { self.to_address = a; }
         }
     }
@@ -1830,7 +1858,7 @@ impl App {
                 });
             ui.add_space(5.0);
         }
-        if let Some(i) = to_remove { self.contacts.remove(i); }
+        if let Some(i) = to_remove { self.contacts.remove(i); save_contacts(&self.contacts); }
         if let Some(a) = to_send { self.to_address = a; self.tab = Tab::Send; }
     }
 
@@ -2400,6 +2428,13 @@ fn circle_icon(ui: &mut egui::Ui, color: Color32, icon: &str) {
     p.text(center, egui::Align2::CENTER_CENTER, icon,
         FontId::new(14.0, FontFamily::Proportional), color);
 }
+fn open_url(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    { std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn().map(|_| ()) }
+    #[cfg(not(target_os = "windows"))]
+    { std::process::Command::new("xdg-open").arg(url).spawn().map(|_| ()) }
+}
+
 fn data_dir() -> std::path::PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(std::path::PathBuf::from)
@@ -2411,6 +2446,32 @@ fn data_dir() -> std::path::PathBuf {
 }
 
 fn pass_file_path() -> std::path::PathBuf { data_dir().join("wallet.pass") }
+
+fn history_file_path() -> std::path::PathBuf { data_dir().join("history.json") }
+fn contacts_file_path() -> std::path::PathBuf { data_dir().join("contacts.json") }
+
+fn load_history() -> Vec<HistoryEntry> {
+    match std::fs::read(history_file_path()) {
+        Ok(b) => serde_json::from_slice(&b).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+pub fn save_history(list: &[HistoryEntry]) {
+    if let Ok(j) = serde_json::to_vec(list) {
+        let _ = std::fs::write(history_file_path(), j);
+    }
+}
+fn load_contacts() -> Vec<(String, String)> {
+    match std::fs::read(contacts_file_path()) {
+        Ok(b) => serde_json::from_slice(&b).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+fn save_contacts(list: &[(String, String)]) {
+    if let Ok(j) = serde_json::to_vec(list) {
+        let _ = std::fs::write(contacts_file_path(), j);
+    }
+}
 
 fn load_password_hash() -> Option<[u8; 32]> {
     let bytes = std::fs::read(pass_file_path()).ok()?;
