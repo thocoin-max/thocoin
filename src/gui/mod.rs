@@ -298,12 +298,12 @@ impl App {
         let supply = *self.chain.supply.read();
         if height > self.last_height_seen {
 
-            let mut new_blocks: Vec<(crate::core::block::Block, u64)> = self.chain.headers.read()
-                .values()
-                .filter(|(_, h)| *h > self.last_height_seen && *h <= height)
-                .cloned()
-                .collect();
-            new_blocks.sort_by_key(|(_, h)| *h);
+            let from = self.last_height_seen + 1;
+            let to = height.min(from + 200);
+            let mut new_blocks: Vec<(crate::core::block::Block, u64)> = Vec::new();
+            for h in from..=to {
+                if let Some(b) = self.chain.block_at(h) { new_blocks.push((b, h)); }
+            }
 
             let my_script = self.wallet.key.read().script_pubkey();
             let mut hist = self.history.lock();
@@ -353,9 +353,10 @@ impl App {
                     }
                 }
             }
-            self.last_height_seen = height;
+            self.last_height_seen = to;
             self.last_supply_seen = supply;
-            save_history(&self.history.lock());
+            save_history(&hist);
+            drop(hist);
         }
         let now = Instant::now();
         let dc = now.duration_since(self.last_hr_cpu_t);

@@ -43,6 +43,18 @@ fn now_secs() -> u64 {
         .map(|d| d.as_secs()).unwrap_or(0)
 }
 
+fn dbglog(msg: &str) {
+    use std::io::Write;
+    let base = std::env::var_os("APPDATA").map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let dir = base.join("ThoCoin");
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("debug.log")) {
+        let _ = writeln!(f, "[chain] {}", msg);
+    }
+}
+
+
 impl ChainState {
     pub fn open(path: &str) -> Result<Self> {
         let db = sled::open(path)?;
@@ -392,6 +404,7 @@ impl ChainState {
     }
 
     fn connect_tip(&self, block: &Block) -> Result<()> {
+        dbglog("connect_tip enter");
         let tip = *self.tip.read();
         let height = *self.height.read() + 1;
         if block.header.prev_hash != tip {
@@ -451,6 +464,7 @@ impl ChainState {
         self.height_index.write().insert(height, (block.hash(), block.header.timestamp));
         self.validated.write().insert(block.hash());
         self.persist_meta(&block.hash(), height, new_supply, &work)?;
+        dbglog(&format!("connect_tip done h={}", height));
         Ok(())
     }
 
@@ -526,7 +540,9 @@ impl ChainState {
     }
 
     pub fn accept_block(&self, block: &Block) -> Result<bool> {
+        dbglog("accept wait lock");
         let _guard = self.apply_lock.lock();
+        dbglog("accept got lock");
         let hash = block.hash();
         if self.index.read().contains_key(&hash) {
             return Ok(false);

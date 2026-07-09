@@ -1,7 +1,7 @@
 // Lightweight update checker. Runs once at GUI startup in a background thread.
 // It queries two sources in order and reports the newest version found:
 //   1. GitHub Releases API (latest tag)
-//   2. https://www.thocoin.org/version.json  (fallback / override)
+//   2. https://explorer.thocoin.org/version.json  (fallback / override)
 // The GUI shows a non-blocking banner if a newer version than CURRENT is found.
 // Nothing is downloaded or installed automatically.
 
@@ -13,7 +13,7 @@ pub const RELEASES_URL: &str = "https://github.com/thocoin-max/thocoin/releases/
 pub const DOWNLOAD_URL: &str = "https://www.thocoin.org/download";
 
 const GITHUB_API: &str = "https://api.github.com/repos/thocoin-max/thocoin/releases/latest";
-const SITE_JSON: &str = "https://www.thocoin.org/version.json";
+const SITE_JSON: &str = "https://explorer.thocoin.org/version.json";
 
 #[derive(Clone, Default)]
 pub struct UpdateState {
@@ -55,14 +55,13 @@ impl UpdateState {
 }
 
 fn http_get(url: &str) -> Option<String> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("thocoin-wallet")
+    let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(8))
-        .build()
-        .ok()?;
-    let resp = client.get(url).send().ok()?;
-    if !resp.status().is_success() { return None; }
-    resp.text().ok()
+        .build();
+    match agent.get(url).set("User-Agent", "thocoin-wallet").call() {
+        Ok(resp) => resp.into_string().ok(),
+        Err(_) => None,
+    }
 }
 
 fn check_github() -> Option<String> {
